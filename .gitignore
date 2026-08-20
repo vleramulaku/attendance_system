@@ -1,0 +1,7 @@
+firmware/attendance_system/secrets.h
+.env
+.vscode/
+Thumbs.db
+*.log
+*.zip
+
