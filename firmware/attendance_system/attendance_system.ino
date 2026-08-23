@@ -15,9 +15,9 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 const int greenLED = 25;
 const int redLED = 26;
 const int buzzer = 27;
-const int BTN_UP = 32;
+const int BTN_UP = 14;
 const int BTN_DOWN = 33;
-const int BTN_OK = 14;
+const int BTN_OK = 32;
 
 const char *ssid = WIFI_SSID;
 const char *password = WIFI_PASSWORD;
@@ -41,6 +41,13 @@ String *currentCourses = nullptr;
 
 unsigned long lastDetectTime = 0;
 const int cooldown = 3000;
+const int studentMessageDuration = 3000;
+
+bool wifiWasConnected = false;
+unsigned long lastWiFiCheck = 0;
+unsigned long lastReconnectAttempt = 0;
+const unsigned long wifiCheckInterval = 1000;
+const unsigned long reconnectInterval = 5000;
 
 void handleProfessor(String name, String courses[], DateTime now);
 void handleStudent(String name, int &state, DateTime now);
@@ -50,6 +57,7 @@ void playUnknownSound();
 void printTime(DateTime time);
 void sendAttendance(String student, String course, String status);
 void sendSession(String professor, String course, String action);
+void monitorWiFi();
 String apiUrl(String endpoint);
 
 void setup()
@@ -77,6 +85,8 @@ void setup()
     } else {
         Serial.println("WiFi Failed!");
     }
+
+    wifiWasConnected = WiFi.status() == WL_CONNECTED;
 
     mySerial.begin(9600, SERIAL_8N1, 16, 17);
     Wire.begin(21, 22);
@@ -119,6 +129,8 @@ void setup()
 
 void loop()
 {
+    monitorWiFi();
+
     if (millis() - lastDetectTime < cooldown) {
         return;
     }
@@ -172,7 +184,7 @@ void handleProfessor(String name, String courses[], DateTime now)
             lcd.setCursor(0, 1);
             lcd.print(activeCourse);
             lcd.setCursor(0, 2);
-            lcd.print("OK = Yes");
+            lcd.print("Yes");
 
             while (true) {
                 if (digitalRead(BTN_OK) == LOW) {
@@ -231,6 +243,9 @@ void handleProfessor(String name, String courses[], DateTime now)
             lcd.print(currentCourses[i]);
         }
 
+        lcd.setCursor(0, 3);
+        lcd.print("Select");
+
         if (digitalRead(BTN_UP) == LOW) {
             if (selected > 0) {
                 selected--;
@@ -239,9 +254,7 @@ void handleProfessor(String name, String courses[], DateTime now)
         }
 
         if (digitalRead(BTN_DOWN) == LOW) {
-            if (selected < totalCourses - 1) {
-                selected++;
-            }
+            selected = (selected + 1) % totalCourses;
             delay(180);
         }
 
@@ -291,6 +304,9 @@ void handleStudent(String name, int &state, DateTime now)
     lcd.setCursor(0, 1);
     lcd.print(activeCourse);
 
+    digitalWrite(greenLED, HIGH);
+    digitalWrite(redLED, LOW);
+
     if (state == 0) {
         state = 1;
         lcd.setCursor(0, 2);
@@ -328,7 +344,16 @@ void handleStudent(String name, int &state, DateTime now)
     Serial.print(activeCourse);
     Serial.print(" ");
     printTime(now);
-    delay(2000);
+
+    delay(studentMessageDuration);
+    digitalWrite(greenLED, LOW);
+    lcd.clear();
+    lcd.clear();
+    lcd.print("Waiting for");
+    lcd.setCursor(0, 1);
+    lcd.print("Student...");
+    lcd.setCursor(0, 2);
+    lcd.print(activeCourse);
 }
 
 void playEnterSound()
@@ -385,6 +410,39 @@ String apiUrl(String endpoint)
         + "/attendance_system/api/" + endpoint;
 }
 
+void monitorWiFi()
+{
+    unsigned long currentMillis = millis();
+
+    if (currentMillis - lastWiFiCheck < wifiCheckInterval) {
+        return;
+    }
+
+    lastWiFiCheck = currentMillis;
+    bool wifiConnected = WiFi.status() == WL_CONNECTED;
+
+    if (wifiConnected != wifiWasConnected) {
+        wifiWasConnected = wifiConnected;
+
+        if (wifiConnected) {
+            Serial.println("WiFi Connected!");
+            Serial.print("ESP32 IP: ");
+            Serial.println(WiFi.localIP());
+        } else {
+            Serial.println("WiFi Disconnected!");
+        }
+    }
+
+    if (
+        !wifiConnected
+        && currentMillis - lastReconnectAttempt >= reconnectInterval
+    ) {
+        lastReconnectAttempt = currentMillis;
+        Serial.println("Trying to reconnect to WiFi...");
+        WiFi.reconnect();
+    }
+}
+
 void sendSession(String professor, String course, String action)
 {
     if (WiFi.status() != WL_CONNECTED) {
@@ -408,6 +466,9 @@ void sendSession(String professor, String course, String action)
     if (httpResponseCode > 0) {
         Serial.print("Session server says: ");
         Serial.println(http.getString());
+    } else {
+        Serial.print("Session server unreachable: ");
+        Serial.println(http.errorToString(httpResponseCode));
     }
 
     http.end();
@@ -436,6 +497,9 @@ void sendAttendance(String student, String course, String status)
     if (httpResponseCode > 0) {
         Serial.print("Attendance server says: ");
         Serial.println(http.getString());
+    } else {
+        Serial.print("Attendance server unreachable: ");
+        Serial.println(http.errorToString(httpResponseCode));
     }
 
     http.end();
